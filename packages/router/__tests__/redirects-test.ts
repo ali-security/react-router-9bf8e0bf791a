@@ -493,6 +493,187 @@ describe("redirects", () => {
     expect(t.window.location.replace).not.toHaveBeenCalled();
   });
 
+  describe("same-origin absolute URLs with double slashes", () => {
+    // Same-origin absolute URLs get stripped down to a path, and a path
+    // starting with `//` would be treated as a protocol-relative URL to an
+    // external origin, resulting in an open redirect
+    let urls: [string, { pathname: string; search: string; hash: string }][] =
+      [
+        [
+          "http://localhost//evil.com",
+          { pathname: "/evil.com", search: "", hash: "" },
+        ],
+        [
+          "http://localhost///evil.com",
+          { pathname: "/evil.com", search: "", hash: "" },
+        ],
+        [
+          "http://localhost/\\evil.com",
+          { pathname: "/evil.com", search: "", hash: "" },
+        ],
+        [
+          "//localhost//evil.com",
+          { pathname: "/evil.com", search: "", hash: "" },
+        ],
+        [
+          "http://localhost//evil.com/path//nested?key=value#hash",
+          {
+            pathname: "/evil.com/path/nested",
+            search: "?key=value",
+            hash: "#hash",
+          },
+        ],
+      ];
+
+    it("does not redirect externally from navigation action redirects (push)", async () => {
+      for (let [url, expected] of urls) {
+        let t = setup({ routes: REDIRECT_ROUTES });
+
+        let A = await t.navigate("/parent/child", {
+          formMethod: "post",
+          formData: createFormData({}),
+        });
+
+        await A.actions.child.redirectReturn(url);
+        expect(t.window.location.assign).not.toHaveBeenCalled();
+        expect(t.window.location.replace).not.toHaveBeenCalled();
+        expect(t.router.state.historyAction).toBe("PUSH");
+        expect(t.router.state.location).toMatchObject({
+          ...expected,
+          state: { _isRedirect: true },
+        });
+        expect(t.history.location).toMatchObject(expected);
+      }
+    });
+
+    it("does not redirect externally from navigation action redirects (replace)", async () => {
+      for (let [url, expected] of urls) {
+        let t = setup({ routes: REDIRECT_ROUTES });
+
+        let A = await t.navigate("/parent/child", {
+          formMethod: "post",
+          formData: createFormData({}),
+          replace: true,
+        });
+
+        await A.actions.child.redirectReturn(url);
+        expect(t.window.location.assign).not.toHaveBeenCalled();
+        expect(t.window.location.replace).not.toHaveBeenCalled();
+        expect(t.router.state.historyAction).toBe("REPLACE");
+        expect(t.router.state.location).toMatchObject(expected);
+        expect(t.history.location).toMatchObject(expected);
+      }
+    });
+
+    it("does not redirect externally from navigation loader redirects", async () => {
+      for (let [url, expected] of urls) {
+        let t = setup({ routes: REDIRECT_ROUTES });
+
+        let A = await t.navigate("/parent");
+        await A.loaders.parent.redirectReturn(url);
+        expect(t.window.location.assign).not.toHaveBeenCalled();
+        expect(t.window.location.replace).not.toHaveBeenCalled();
+        expect(t.router.state.location).toMatchObject(expected);
+        expect(t.history.location).toMatchObject(expected);
+      }
+    });
+
+    it("does not redirect externally from fetcher loader redirects", async () => {
+      for (let [url, expected] of urls) {
+        let t = setup({ routes: REDIRECT_ROUTES });
+
+        let A = await t.fetch("/parent", "key");
+        await A.loaders.parent.redirectReturn(url);
+        expect(t.window.location.assign).not.toHaveBeenCalled();
+        expect(t.window.location.replace).not.toHaveBeenCalled();
+        expect(t.router.state.location).toMatchObject(expected);
+        expect(t.history.location).toMatchObject(expected);
+      }
+    });
+
+    it("does not redirect externally from fetcher action redirects", async () => {
+      for (let [url, expected] of urls) {
+        let t = setup({ routes: REDIRECT_ROUTES });
+
+        let A = await t.fetch("/parent/child", "key", {
+          formMethod: "post",
+          formData: createFormData({}),
+        });
+        await A.actions.child.redirectReturn(url);
+        expect(t.window.location.assign).not.toHaveBeenCalled();
+        expect(t.window.location.replace).not.toHaveBeenCalled();
+        expect(t.router.state.location).toMatchObject(expected);
+        expect(t.history.location).toMatchObject(expected);
+      }
+    });
+
+    it("keeps document reload redirects on the same origin", async () => {
+      for (let [url, expected] of urls) {
+        let t = setup({ routes: REDIRECT_ROUTES });
+
+        let A = await t.navigate("/parent/child", {
+          formMethod: "post",
+          formData: createFormData({}),
+        });
+
+        await A.actions.child.redirectReturn(url, 301, {
+          "X-Remix-Reload-Document": "true",
+        });
+        expect(t.window.location.assign).toHaveBeenCalledWith(
+          expected.pathname + expected.search + expected.hash
+        );
+        expect(t.window.location.replace).not.toHaveBeenCalled();
+      }
+    });
+
+    it("navigates to the matching same-origin route", async () => {
+      let t = setup({ routes: REDIRECT_ROUTES });
+
+      let A = await t.navigate("/parent/child", {
+        formMethod: "post",
+        formData: createFormData({}),
+      });
+
+      let B = await A.actions.child.redirectReturn(
+        "http://localhost//parent",
+        undefined,
+        undefined,
+        ["parent"]
+      );
+      await B.loaders.parent.resolve("PARENT");
+      expect(t.window.location.assign).not.toHaveBeenCalled();
+      expect(t.window.location.replace).not.toHaveBeenCalled();
+      expect(t.router.state).toMatchObject({
+        location: {
+          pathname: "/parent",
+          state: {
+            _isRedirect: true,
+          },
+        },
+        navigation: IDLE_NAVIGATION,
+        loaderData: {
+          parent: "PARENT",
+        },
+        errors: null,
+      });
+    });
+
+    it("still processes external protocol-relative redirects", async () => {
+      let t = setup({ routes: REDIRECT_ROUTES });
+
+      let A = await t.navigate("/parent/child", {
+        formMethod: "post",
+        formData: createFormData({}),
+      });
+
+      await A.actions.child.redirectReturn("//remix.run//blog");
+      expect(t.window.location.assign).toHaveBeenCalledWith(
+        "//remix.run//blog"
+      );
+      expect(t.window.location.replace).not.toHaveBeenCalled();
+    });
+  });
+
   it("automatically replaces in the history stack if you redirect to the same location (root relative)", async () => {
     let t = setup({ routes: REDIRECT_ROUTES });
 
